@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar | Size, evidence, conviction</title>
+<meta name="description" content="A snapshot radar with fitted size curves, leave-one-out evidence and farm economics net of gas.">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header><div class="brand"><span class="mark" aria-hidden="true"></span><div><h1>Token Radar</h1><p>Pre-token protocols. Measured against the market.</p></div></div><div class="stamp">SEALED SNAPSHOT<strong id="asof"></strong><span>RADAR / 03</span></div></header>
+<section class="facts" id="facts" aria-label="Snapshot counts"></section>
+<section class="evidence" aria-labelledby="evidence-title">
+<div class="section-line"><h2 id="evidence-title">01 / Evidence before conviction</h2><span>OUT-OF-SAMPLE CHECK</span></div>
+<p class="validation" id="validation"></p>
+<p id="baseline"></p>
+<p>The board prices each row with the estimator that won out of sample in its family; families with fewer than eight comparables use the snapshot-wide median. All multiples are clamped to [0.05, 2.50].</p>
+<p>A fitted curve was tested and lost to the median in most families, so the board keeps the median there.</p>
+<details><summary>Per-family validation, and the tested curve</summary>
+<div class="tablewrap" id="family-validation" aria-label="Per-family estimator validation"></div>
+<p><strong>Tested size curve:</strong> multiple = clamp(a + b × log10(TVL in USD), 0.05, 2.50). Ordinary least squares on raw market-cap / TVL; each family fits separately at n ≥ 8. The curve test uses the family median for smaller or degenerate training samples, and the snapshot median for empty ones.</p>
+<div class="curve-grid" id="curves" aria-label="Family coefficients and sample sizes"></div>
+</details>
+<details><summary>What the validation measures</summary><p>Each token-bearing protocol is held out once. Both its curve and any fallback median are rebuilt without it. Error is |predicted multiple − actual multiple|, in multiple points. Predicted / actual = 1.0 is perfect; within 2× means a ratio from 0.5 to 2.0. The baseline repeats the same holdouts using only medians. These scores test market multiples, not future token launches or farming returns. Raw outliers remain in the fit and errors; predictions alone are clamped. Families of exactly eight train on seven and therefore validate their median fallback. Ties keep the median. Overall scores above describe the tested curve and median baseline, not a separate validation of the selection rule.</p></details>
+</section>
+<nav class="controls" aria-label="Board filters">
+<label>Search<input type="search" id="q" placeholder="Protocol, slug or chain"></label>
+<label>Category<select id="cat"><option value="">All categories</option></select></label>
+<label>Chain<select id="chain"><option value="">All chains</option></select></label>
+<label>Verdict<select id="verdict"><option value="">All verdicts</option><option>farm</option><option>thin</option><option>skip</option></select></label>
+<label>Order<select id="sort"><option value="implied_value_usd">Implied value</option><option value="net">Net farm EV</option><option value="tvl_usd">TVL</option><option value="name">Name</option></select></label>
+<label class="check"><input type="checkbox" id="wl">Watchlist only</label><span id="count" role="status"></span>
+</nav>
+<main class="layout">
+<section class="board" aria-label="Ranked protocols"><div class="section-line"><h2>02 / The opportunity board</h2><span>SELECT A ROW FOR THE MATH</span></div><div class="tablewrap"><table><thead><tr><th>Rank</th><th>Protocol / category</th><th class="num">TVL</th><th class="num">Multiple ×</th><th class="num">Implied value</th><th>Verdict</th><th class="num">Net EV</th></tr></thead><tbody id="rows"></tbody></table></div><p id="empty" hidden>No protocols match. Clear a filter to broaden the board.</p></section>
+<aside id="detail" aria-label="Selected protocol detail"></aside>
+</main>
+<footer><strong>Scenario, not a promised reward.</strong> Implied value = TVL × selected multiple × momentum × maturity. Momentum = 1 + 0.75 × clamp(7-day change, −40, 40) / 100; missing change uses 0. Maturity = 0.70 + 0.30 × min(age, 1095) / 1095; missing age uses 365 days. A 0.5% airdrop pool is divided equally among 10,000 participants, then weighted by 25% launch-and-eligibility probability. Capital is at risk; principal losses, taxes and labor are excluded. Gas and fees are fixed scenarios, not live quotes. “Farm” requires net EV ≥ $5 and gross EV ≥ twice costs; “thin” has positive net EV below those margins; “skip” has net EV ≤ $0.<p id="source"></p><details><summary>Gas assumptions per transaction</summary><p id="gas-table"></p><p>Two entry transactions + one per started week + withdrawal and claim. Gas is budgeted even if no claim arrives. Stay on an already funded chain; cross-chain funding costs are excluded. Capital tiers follow TVL: $50 below $50M, then $75 / $100 / $150 / $250 at $50M / $250M / $1B / $5B. Fees = 0.3% of capital; opportunity cost = capital × 5% × days / 365.</p></details></footer>
+<noscript>This dashboard needs local JavaScript enabled to read the sealed data.js snapshot.</noscript>
+<script src="../data.js"></script><script src="app.js"></script>
+</body>
+</html>
