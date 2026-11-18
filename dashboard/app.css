@@ -427,3 +427,29 @@ table.comps td.nm2 { max-width: 150px; overflow: hidden; text-overflow: ellipsis
   .detail { position: static; border-left: 0; border-top: 1px solid var(--ink); max-height: none; }
   .count { margin-left: 0; }
 }
+
+/* ---------------------------------------------------------------- density pass
+   The same board, the same numbers, more of them on the first screen: tighter
+   rows, a thinner filter bar and a shorter masthead. No column is removed. */
+
+.mast { padding: 9px 24px 9px; }
+.facts { grid-template-columns: repeat(4, 1fr); }
+.fact { padding: 5px 20px 6px; }
+.fact b { font: 600 19px/1.1 var(--mono); }
+.fact span { margin-top: 2px; font-size: 8.5px; letter-spacing: 0.1em; }
+.controls { gap: 8px; padding: 6px 24px 7px; }
+.field { gap: 1px; }
+.field > span { font-size: 8px; letter-spacing: 0.1em; }
+.field input, .field select { padding: 3px 7px; font-size: 11px; }
+.toggle { padding: 3px 9px; font-size: 10.5px; }
+.count { margin: 0 0 2px auto; font-size: 10px; }
+thead th { padding: 4px 10px; font-size: 8.5px; }
+tbody td { padding: 2px 10px; }
+.who .nm { font-size: 11.5px; line-height: 1.25; }
+.who .sub { font-size: 9px; margin-top: 0; }
+.cmp { font-size: 11px; }
+.cmp-sub { font-size: 8.5px; }
+.impl { gap: 2px; }
+.impl b { font-size: 11.5px; }
+.impl .bar { height: 2px; }
+.tablewrap { max-height: calc(100vh - 226px); }
