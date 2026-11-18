@@ -177,7 +177,61 @@ export interface RadarRow {
   growth_pct: number;
   watchlisted: boolean;
   below_floor: boolean;
+  verdict: Verdict;
   farm_steps: string[];
+}
+
+/** What the page's written rule says to do with a ranked row. */
+export type Verdict = 'FARM' | 'MARGINAL' | 'SKIP';
+
+/**
+ * The verdict a row earns, by the rule the page prints beside it: a row the model prices below the
+ * floor is a SKIP; a row that clears the floor earns FARM only when its multiple is its own
+ * category's (at least `min_sample` readings) and its seven-day momentum is not negative; a row that
+ * clears the floor but borrows a multiple or is fading is MARGINAL. Nothing here is decoration: the
+ * three states are exactly these three predicates, and the dashboard counts them.
+ */
+export function verdictOf(row: BoardRow, model: ModelConstants = MODEL): Verdict {
+  if (row.below_floor) return 'SKIP';
+  const borrowed = row.model.comp_sample < model.min_sample;
+  const fading = row.model.momentum_multiplier < 1;
+  return borrowed || fading ? 'MARGINAL' : 'FARM';
+}
+
+/** One era of the leave-one-out check: protocols listed in a window, scored out of sample. */
+export interface EraCheck {
+  label: string;
+  n: number;
+  from: string;
+  to: string;
+  median_miss: number;
+  within_2x: number;
+}
+
+/** A residual band fitted on the oldest protocols and then held against the newer ones. */
+export interface RangeCheck {
+  fit_on: string;
+  n_fit: number;
+  low: number;
+  high: number;
+  holds: number;
+}
+
+/**
+ * The evidence panel: the model scored on the protocols it may not price from themselves. Every
+ * token-bearing protocol is predicted once with its own reading removed from the multiples, so the
+ * number is a leave-one-out miss and not a fit. `eras` splits the same check by listing date, and
+ * `range` fits a residual band on the oldest third and reports how much of the rest it holds.
+ */
+export interface Validation {
+  n: number;
+  median_miss: number;
+  within_2x: number;
+  within_3x: number;
+  eras: EraCheck[];
+  range: RangeCheck;
+  holds_newest: number;
+  own_category_share: number;
 }
 
 /** A protocol whose token already trades: the market's evidence, never a ranked row. */
@@ -212,6 +266,7 @@ export interface RadarData {
   comps: Record<string, ComparableGroup>;
   rows: RadarRow[];
   live: LiveRow[];
+  validation: Validation;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -641,7 +696,77 @@ export function radarRow(row: BoardRow): RadarRow {
     growth_pct: row.model.growth_pct,
     watchlisted: row.watchlisted,
     below_floor: row.below_floor,
+    verdict: verdictOf(row),
     farm_steps: row.farm_steps,
+  };
+}
+
+/**
+ * Score the model on the protocols it must not price from themselves: every token-bearing protocol
+ * is predicted once with its own reading removed from the multiple index, and compared to the market
+ * cap it actually carries. The miss is `max(predicted/actual, actual/predicted)`, so 1 is exact and
+ * larger is worse. The same check is split by listing date, and a residual band fitted on the oldest
+ * third is then held against the newer protocols it never saw.
+ */
+export function holdoutOf(snapshot: Snapshot, model: ModelConstants = MODEL): Validation {
+  const checked = snapshot.protocols
+    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
+    .map((p) => {
+      const index = buildCompIndex(snapshot.protocols.filter((q) => q.slug !== p.slug));
+      const valuation = valueOf(p, snapshot.as_of, index, model);
+      const ratio = valuation.implied / (p.mcap_usd as number);
+      return { slug: p.slug, listed: p.listed_at, ratio, miss: ratio >= 1 ? ratio : 1 / ratio, own: valuation.compGroup.source === 'category' };
+    });
+  const misses = checked.map((r) => r.miss);
+  const share = (set: number[], limit: number): number => (set.length === 0 ? 0 : set.filter((v) => v <= limit).length / set.length);
+  const medianOf = (set: number[]): number => (set.length === 0 ? 0 : median(set));
+
+  const dated = checked
+    .filter((r) => r.listed !== null)
+    .sort((a, b) => byText(a.listed as string, b.listed as string) || byText(a.slug, b.slug));
+  const third = Math.floor(dated.length / 3);
+  const slices: Array<[string, typeof dated]> = [
+    ['oldest', dated.slice(0, third)],
+    ['older', dated.slice(third, third * 2)],
+    ['newer', dated.slice(third * 2)],
+  ];
+  const eras: EraCheck[] = slices.map(([label, set]) => ({
+    label,
+    n: set.length,
+    from: set[0]?.listed ?? '',
+    to: set[set.length - 1]?.listed ?? '',
+    median_miss: round4(medianOf(set.map((r) => r.miss))),
+    within_2x: round4(share(set.map((r) => r.miss), 2)),
+  }));
+
+  const inBand = (set: typeof dated, low: number, high: number): number => (set.length === 0 ? 0 : set.filter((r) => r.ratio >= low && r.ratio <= high).length / set.length);
+  const oldest = slices[0][1];
+  const ratios = oldest.map((r) => r.ratio).sort((a, b) => a - b);
+  const pick = (t: number): number => {
+    if (ratios.length === 0) return 1;
+    const pos = (ratios.length - 1) * t;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    return lo === hi ? ratios[lo]! : ratios[lo]! + (ratios[hi]! - ratios[lo]!) * (pos - lo);
+  };
+  const low = round4(pick(0.1));
+  const high = round4(pick(0.9));
+  const newer = slices.slice(1).flatMap(([, set]) => set);
+  return {
+    n: checked.length,
+    median_miss: round4(medianOf(misses)),
+    within_2x: round4(share(misses, 2)),
+    within_3x: round4(share(misses, 3)),
+    eras,
+    range: {
+      fit_on: `the ${oldest.length} oldest protocols`,
+      n_fit: oldest.length,
+      low,
+      high,
+      holds: round4(inBand(newer, low, high)),
+    },
+    holds_newest: round4(inBand(slices[2][1], low, high)),
+    own_category_share: round4(checked.length === 0 ? 0 : checked.filter((r) => r.own).length / checked.length),
   };
 }
 
@@ -667,6 +792,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     comps,
     rows: board.map(radarRow),
     live: liveRows(snapshot),
+    validation: holdoutOf(snapshot, model),
   };
   return { board, radar };
 }

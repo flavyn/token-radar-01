@@ -26,6 +26,15 @@
 
 <section class="facts" id="facts" aria-label="Snapshot figures"></section>
 
+<section class="proof" aria-label="Method and out-of-sample check">
+  <div class="method" id="method"></div>
+  <div class="check">
+    <h2>Out-of-sample check <span class="check-tag" id="checktag">—</span></h2>
+    <p class="check-line" id="checkline">—</p>
+    <table id="validation"><thead><tr><th>Era</th><th class="num">n</th><th class="num">Median miss</th><th class="num">Within 2&times;</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
 <div class="controls" aria-label="Filter and order the board">
   <label class="field search"><span>Search</span><input id="q" type="search" placeholder="protocol, slug or chain" autocomplete="off" spellcheck="false"></label>
   <label class="field"><span>Category</span><select id="cat"></select></label>
@@ -37,6 +46,12 @@
     <option value="comp">Comparables multiple</option>
     <option value="age">Age in the snapshot</option>
     <option value="name">Name</option>
+  </select></label>
+  <label class="field"><span>Verdict</span><select id="verdict">
+    <option value="all">Any verdict</option>
+    <option value="FARM">FARM</option>
+    <option value="MARGINAL">MARGINAL</option>
+    <option value="SKIP">SKIP</option>
   </select></label>
   <div class="toggles">
     <button class="toggle" id="wl" type="button" aria-pressed="false">Watchlist only</button>
@@ -61,6 +76,8 @@
 
 <footer class="foot">
   <p><b>How a value is made.</b> Every implied value is the snapshot's own TVL times a market multiple, times the protocol's seven-day momentum, times its maturity. The multiple is the median market-cap-to-TVL of the protocols in this same snapshot whose token already trades; a category with fewer than five of those borrows its family's median, and the detail view says which and how many readings stand behind it. Momentum is 1 + 0.75 × the seven-day change clamped to ±40%. Maturity is 0.70 + 0.30 × age in days, capped at three years. No protocol name is special-cased: one function scores every row.</p>
+  <p><b>What the verdict means.</b> A row the model prices below the floor is <b>SKIP</b>. A row that clears the floor is <b>FARM</b> only when its multiple is its own category's, from at least five token-bearing readings, and its seven-day momentum is not negative; if it borrows a family or snapshot multiple, or its seven days are negative, it is <b>MARGINAL</b>. The three counts are on the tiles above, and the row's badge is that predicate, not a colour.</p>
+  <p><b>What is checked, and what is not used.</b> The panel above scores the model on the protocols it may not price from themselves: each token-bearing protocol is predicted once with its own reading removed from the multiples, so the miss is a leave-one-out number and not a fit. A residual band fitted on the oldest protocols is then held against the newer ones it never saw. Nothing here reads the network, no name is picked by hand, and the implied value never rises down the board: the board is a total order on the snapshot's own figures.</p>
   <p class="src" id="footsrc">—</p>
 </footer>
 
@@ -68,3 +85,4 @@
 <script src="app.js"></script>
 </body>
 </html>
+
