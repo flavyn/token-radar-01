@@ -155,6 +155,7 @@ export interface BoardRow {
     growth_pct: number;
   };
   farm_steps: string[];
+  farm_verdict: FarmVerdict;
 }
 
 /** A board row as the page reads it from data.js. */
@@ -568,38 +569,130 @@ export function weeklyFor(category: string | null): string {
   return 'a deposit or a swap';
 }
 
+/** The concrete mechanism a category's farmers actually operate, with the fee the mechanism charges. */
+export interface Mechanism {
+  mechanism: string;
+  fee: string;
+}
+
 /**
- * A protocol's farm plan: five steps, each an action with a cost and a time, all of them derived
- * from the protocol's own record (category, first chain, TVL, age) rather than a list of names.
+ * The mechanism itself, named after what the transaction does rather than after the category: a
+ * curator vault is a share deposit, a perp venue is a basis trade, a CDP is a debt mint. Two rows in
+ * different categories therefore never share a plan, and two rows in the same category differ on
+ * chain, capital, hold and fee.
  */
-export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
+export function mechanismFor(category: string | null): Mechanism {
+  const c = (category ?? '').toLowerCase();
+  if (c.includes('curator') || c.includes('allocator')) return { mechanism: 'curated vault share deposit', fee: '0.00%' };
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral') || c.includes('credit')) return { mechanism: 'collateralized debt mint', fee: '0.50%' };
+  if (c.includes('dex') || c.includes('swap')) return { mechanism: 'concentrated liquidity provision', fee: '0.30%' };
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('basis') || c.includes('perp')) return { mechanism: 'cash-and-carry basis', fee: '0.06%' };
+  if (c.includes('rwa')) return { mechanism: 'tokenized treasury subscription', fee: '0.10%' };
+  if (c.includes('staking') || c.includes('restak')) return { mechanism: 'validator stake delegation', fee: '5.00%' };
+  if (c.includes('bridge')) return { mechanism: 'payment-channel transfer', fee: '0.05%' };
+  if (c.includes('stable')) return { mechanism: 'one-to-one stablecoin wrapper mint', fee: '0.10%' };
+  if (c.includes('insurance')) return { mechanism: 'cover purchase', fee: '2.00%' };
+  if (c.includes('yield') || c.includes('farm') || c.includes('vault')) return { mechanism: 'strategy allocation vault', fee: '0.00%' };
+  return { mechanism: 'pooled deposit', fee: '0.10%' };
+}
+
+/** What the plan tells the reader to do with one row: run it, run it smaller, or leave it. */
+export type FarmVerdict = 'farm' | 'thin' | 'skip';
+
+/** The row's own numbers, which is all a verdict may rest on. */
+export interface FarmClue {
+  growth: number;
+  age: number | null;
+  tvl: number;
+  compMultiple: number;
+  compSample: number;
+  compSource: CompSource;
+  belowFloor: boolean;
+  category: string | null;
+}
+
+/**
+ * The verdict, as three predicates over the row's own record: a protocol bleeding out, a wrapper under
+ * the floor, or a borrowed multiple with negative momentum is a skip; a protocol fading, too young to
+ * have a record, too small to matter, or priced only by the clamped floor multiple is thin; the rest
+ * are worth the capital. Every branch reads a field the board already prints, so a reader can recompute
+ * the verdict from `board.json` alone.
+ */
+export function farmVerdictOf(c: FarmClue): FarmVerdict {
+  const cat = (c.category ?? '').toLowerCase();
+  const wrapper = cat.includes('stable') || cat.includes('btc') || cat.includes('wrapped');
+  if (!Number.isFinite(c.growth)) return 'thin';
+  if (c.growth <= -20) return 'skip';
+  if (wrapper && c.belowFloor) return 'skip';
+  if (c.compSource === 'snapshot' && c.growth < 0) return 'skip';
+  if (c.growth <= -8) return 'thin';
+  if (c.age === null || c.age < 90) return 'thin';
+  if (c.tvl < 20_000_000) return 'thin';
+  if (c.compMultiple <= 0.05) return 'thin';
+  return 'farm';
+}
+
+/** One line saying why a row earned its verdict, from the same fields the verdict read. */
+export function verdictReason(p: SnapshotProtocol, c: FarmClue, verdict: FarmVerdict): string {
+  const tvl = `TVL $${Math.round(c.tvl / 1_000_000)}M`;
+  const move = `7d ${c.growth > 0 ? '+' : ''}${c.growth.toFixed(1)}%`;
+  const record = c.age === null ? 'no tracked record' : `${c.age}d record`;
+  if (verdict === 'skip' && (c.category ?? '').toLowerCase().match(/stable|btc|wrapped/) && c.belowFloor) {
+    return `a wrapper under the $${Math.round(p.tvl_usd / 1_000_000)}M floor has no size to farm`;
+  }
+  if (verdict === 'skip' && c.compSource === 'snapshot' && c.growth < 0) return `${tvl}, ${move} borrows the snapshot-wide multiple; no category signal`;
+  if (verdict === 'skip') return `${tvl}, ${move} over ${record}; capital is leaving, not arriving`;
+  if (verdict === 'thin' && c.age !== null && c.age < 90) return `only ${c.age}d of tracked record; the snapshot is too short to size a position`;
+  if (verdict === 'thin' && c.growth <= -8) return `${tvl}, ${move} over ${record}; the position would fade while it is open`;
+  if (verdict === 'thin' && c.tvl < 20_000_000) return `${tvl}, ${move}; below the size where one wallet's actions move the count`;
+  if (verdict === 'thin') return `multiple clamped at ${c.compMultiple.toFixed(2)} on ${c.compSample} readings`;
+  return `${tvl}, ${move}, ${record}; comp ${c.compMultiple.toFixed(3)} on ${c.compSample} readings`;
+}
+
+/**
+ * A protocol's farm plan: five steps naming the concrete mechanism, each with the fee, the gas, the
+ * capital and the hold it costs, and the verdict the row earned printed into the first and last step.
+ * All of it derives from the protocol's own record, so the plan changes when the record does.
+ */
+export function farmSteps(p: SnapshotProtocol, age: number | null, c?: FarmClue): FarmStep[] {
   const chain = p.chains.length > 0 ? p.chains[0]! : 'its main chain';
   const capital = capitalFor(p);
   const gas = gasFor(chain);
   const hold = holdDaysFor(age);
+  const weeks = Math.max(2, Math.round(hold / 7));
+  const { mechanism, fee } = mechanismFor(p.category);
+  const verdict: FarmVerdict = c === undefined ? 'farm' : farmVerdictOf(c);
+  const reason = c === undefined ? 'record too thin to judge' : verdictReason(p, c, verdict);
+  const size = verdict === 'skip' ? 0 : verdict === 'thin' ? Math.max(25, Math.round(capital / 2)) : capital;
+  const enter =
+    verdict === 'skip'
+      ? `Do not enter the ${mechanism} yet: ${reason}. Watch ${p.name} until its seven-day change turns positive, then re-read this row.`
+      : `Deposit $${size} into the ${mechanism} on ${chain}${verdict === 'thin' ? ' as a probe size, not a full position' : ''}: ${reason}.`;
   return [
     {
-      text: `Open a fresh wallet on ${chain} that will hold only this farm position, and keep its recovery phrase offline.`,
+      text: `${verdict.toUpperCase()} - open a fresh ${chain} wallet that holds only this ${mechanism} and keep its recovery phrase offline.`,
       cost: `${gas} for the first transaction`,
       time: '10 minutes',
     },
     {
-      text: `Then ${actionFor(p, capital, chain)}.`,
-      cost: `$${capital} of capital and ${gas}`,
-      time: '20 minutes to set up',
+      text: enter,
+      cost: verdict === 'skip' ? 'no capital committed' : `$${size} of capital, ${gas} and a ${fee} entry fee`,
+      time: verdict === 'skip' ? 're-check in 7 days' : '25 minutes to set up',
     },
     {
-      text: `Repeat one qualifying action every week (${weeklyFor(p.category)}) so the address shows a record, not a single deposit.`,
-      cost: `${gas} a week`,
-      time: '15 minutes a week',
+      text: `Repeat the ${mechanism} every week (${weeklyFor(p.category)}) so the address shows ${weeks} weekly actions, not one deposit.`,
+      cost: `${gas} plus ${fee} a week`,
+      time: `15 minutes a week, ${weeks} weeks`,
     },
     {
-      text: `Leave the position open for at least ${hold} days so the activity lands in more than one snapshot before you withdraw.`,
-      cost: `the $${capital} stays in the position`,
-      time: `${hold} days`,
+      text: verdict === 'skip'
+        ? `If it turns positive, hold the ${mechanism} ${hold} days so the activity lands in more than one snapshot before you withdraw.`
+        : `Keep the ${mechanism} open ${hold} days so the activity lands in more than one snapshot before you withdraw.`,
+      cost: verdict === 'skip' ? 'nothing is locked while it is skipped' : `$${size} stays locked in the position`,
+      time: verdict === 'skip' ? '0 days held' : `${hold} days`,
     },
     {
-      text: `Open ${p.name}'s own points or rewards page before withdrawing, claim only from the link the protocol publishes itself, and write the transaction hash into your farm log.`,
+      text: `Re-read ${p.name}'s own page before withdrawing, claim only from the link the protocol publishes itself, write the transaction hash into your farm log. Verdict ${verdict.toUpperCase()}: ${reason}.`,
       cost: 'no fee to check, and never pay to claim',
       time: '10 minutes',
     },
@@ -623,34 +716,48 @@ export function buildBoard(snapshot: Snapshot, index: CompIndex, model: ModelCon
   // A total order, so two runs of the program write the same bytes: implied value first, then the
   // larger protocol, then the slug.
   scored.sort((a, b) => scalarOrder(a.v.implied, b.v.implied) || scalarOrder(a.p.tvl_usd, b.p.tvl_usd) || byText(a.p.slug, b.p.slug));
-  return scored.map((s, i) => ({
-    rank: i + 1,
-    slug: s.p.slug,
-    name: s.p.name,
-    category: s.p.category,
-    chains: s.p.chains,
-    tvl_usd: s.p.tvl_usd,
-    change_7d: s.p.change_7d,
-    mcap_usd: s.p.mcap_usd,
-    listed_at: s.p.listed_at,
-    gecko_id: s.p.gecko_id,
-    symbol: s.p.symbol,
-    token_status: 'pre-token',
-    watchlisted: watchlist.has(s.p.slug),
-    below_floor: s.p.tvl_usd < snapshot.floor_usd,
-    age_days: s.v.age,
-    implied_value_usd: s.v.implied,
-    model: {
-      comp_multiple: s.v.compMultiple,
-      comp_sample: s.v.compGroup.sample,
-      comp_source: s.v.compGroup.source,
-      comp_key: s.v.compGroup.key,
-      momentum_multiplier: round6(s.v.momentum),
-      maturity_multiplier: round6(s.v.maturity),
-      growth_pct: round4(s.v.growthPct),
-    },
-    farm_steps: farmSteps(s.p, s.v.age).map(stepText),
-  }));
+  return scored.map((s, i) => {
+    const clue: FarmClue = {
+      growth: s.v.growthPct,
+      age: s.v.age,
+      tvl: s.p.tvl_usd,
+      compMultiple: s.v.compMultiple,
+      compSample: s.v.compGroup.sample,
+      compSource: s.v.compGroup.source,
+      belowFloor: s.p.tvl_usd < snapshot.floor_usd,
+      category: s.p.category,
+    };
+    const verdict = farmVerdictOf(clue);
+    return {
+      rank: i + 1,
+      slug: s.p.slug,
+      name: s.p.name,
+      category: s.p.category,
+      chains: s.p.chains,
+      tvl_usd: s.p.tvl_usd,
+      change_7d: s.p.change_7d,
+      mcap_usd: s.p.mcap_usd,
+      listed_at: s.p.listed_at,
+      gecko_id: s.p.gecko_id,
+      symbol: s.p.symbol,
+      token_status: 'pre-token' as const,
+      watchlisted: watchlist.has(s.p.slug),
+      below_floor: s.p.tvl_usd < snapshot.floor_usd,
+      age_days: s.v.age,
+      implied_value_usd: s.v.implied,
+      model: {
+        comp_multiple: s.v.compMultiple,
+        comp_sample: s.v.compGroup.sample,
+        comp_source: s.v.compGroup.source,
+        comp_key: s.v.compGroup.key,
+        momentum_multiplier: round6(s.v.momentum),
+        maturity_multiplier: round6(s.v.maturity),
+        growth_pct: round4(s.v.growthPct),
+      },
+      farm_steps: farmSteps(s.p, s.v.age, clue).map(stepText),
+      farm_verdict: verdict,
+    };
+  });
 }
 
 /** A number's place in a descending sort: -1, 0 or 1, never the subtraction of two large numbers. */
